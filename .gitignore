@@ -1,0 +1,40 @@
+# --- 気象データ・キャッシュ・出力画像 ---
+raw_grib/
+cache/
+data/
+outputs/
+output/
+*.bin
+*.grib2
+*.idx
+*.nc
+*.parquet
+*.png
+*.jpg
+*.svg
+*.pdf
+
+# --- Python / Jupyter ---
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+dist/
+*.egg-info/
+.ipynb_checkpoints/
+.venv/
+venv/
+env/
+
+# --- Streamlit ---
+.streamlit/secrets.toml
+
+# --- macOS / エディタ ---
+.DS_Store
+.AppleDouble
+.LSOverride
+._*
+.vscode/
+.idea/
