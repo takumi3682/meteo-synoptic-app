@@ -14,12 +14,12 @@ from meteo_lib import msm_utils as msm
 # ページ設定
 # ==============================================================================
 st.set_page_config(
-    page_title="JMA GSM / MSM 地上気圧・上空気温（雪目安）天気図",
-    page_icon="❄️",
+    page_title="JMA GPV 天気図解析ビューア",
+    page_icon="🌤️",
     layout="wide",
 )
 
-st.title("JMA GSM / MSM 地上気圧・上空気温（雪目安）天気図")
+st.title("JMA GPV 天気図解析ビューア")
 st.caption("京都大学生存圏研究所 (RISH) GPV アーカイブより取得・作図")
 
 # ==============================================================================
@@ -40,12 +40,23 @@ MSM_EXTENTS: dict[str, tuple[float, float, float, float]] = {
 }
 
 # ==============================================================================
-# サイドバー UI
+# サイドバー UI（作図種別によるパラメータ棲み分け）
 # ==============================================================================
 with st.sidebar:
     st.header("作図パラメータ設定")
 
-    # 1. モデル選択
+    # 1. 作図種別の選択（ここで地上図と高層図を棲み分け）
+    chart_mode = st.radio(
+        "天気図の種類",
+        options=[
+            "地上天気図（10m風・気圧H/L・6h降水量）",
+            "高層天気図（地上気圧＋500/850hPa気温）",
+        ],
+        index=0,
+    )
+    is_surface_mode = chart_mode.startswith("地上天気図")
+
+    # 2. モデル選択（地上・高層どちらのモードでも GSM / MSM を切替可能）
     model_choice = st.radio(
         "数値予報モデル",
         options=["GSM (全球 0.5° / 総観場)", "MSM (メソ 5km / 局地場)"],
@@ -53,7 +64,7 @@ with st.sidebar:
     )
     model_type = "GSM" if model_choice.startswith("GSM") else "MSM"
 
-    # 2. 初期日 (UTC)
+    # 3. 初期日 (UTC)
     default_date = dt.datetime.now(dt.timezone.utc).date() - dt.timedelta(days=1)
     init_date = st.date_input(
         "初期日 (UTC)",
@@ -62,7 +73,7 @@ with st.sidebar:
         max_value=dt.datetime.now(dt.timezone.utc).date(),
     )
 
-    # 3. 初期時刻 (UTC) & 予報時間 (FT) のモデル別設定
+    # 4. 初期時刻 (UTC) & 予報時間 (FT)
     if model_type == "GSM":
         init_hour = st.radio(
             "初期時刻 (UTC)",
@@ -71,9 +82,11 @@ with st.sidebar:
             horizontal=True,
         )
         max_ft = 132 if init_hour in ("00", "12") else 84
+        # 地上モードは前6時間降水量を計算するため FT>=6 をデフォルトに推奨
+        min_ft = 6 if is_surface_mode else 0
         fcst_hours = st.slider(
             "予報時間 FT (時間)",
-            min_value=0,
+            min_value=min_ft,
             max_value=max_ft,
             value=24,
             step=6,
@@ -94,15 +107,18 @@ with st.sidebar:
         )
         extent_dict = MSM_EXTENTS
 
-    # 4. 季節カラーレンジ
-    season_label = st.radio(
-        "気温カラーレンジ設定",
-        options=["冬季（寒気・雪解析向け）", "夏季（暖気解析向け）"],
-        index=0,
-    )
-    season = "winter" if season_label.startswith("冬季") else "summer"
+    # 5. 季節カラーレンジ（高層気温モードの時のみ表示）
+    if not is_surface_mode:
+        season_label = st.radio(
+            "気温カラーレンジ設定",
+            options=["冬季（寒気・雪解析向け）", "夏季（暖気解析向け）"],
+            index=0,
+        )
+        season = "winter" if season_label.startswith("冬季") else "summer"
+    else:
+        season = "default"
 
-    # 5. 表示範囲
+    # 6. 表示範囲
     extent_label = st.selectbox(
         "描画領域",
         options=list(extent_dict.keys()),
@@ -110,7 +126,7 @@ with st.sidebar:
     )
     extent = extent_dict[extent_label]
 
-    # 6. 解像度 (DPI)
+    # 7. 解像度 (DPI)
     dpi = st.select_slider(
         "出力解像度 (DPI)",
         options=[120, 150, 200],
@@ -121,10 +137,11 @@ with st.sidebar:
 
 
 # ==============================================================================
-# キャッシュ付き作図関数（GSM / MSM 共通ラッパー）
+# キャッシュ付き作図関数（地上図 / 高層図 共通ラッパー）
 # ==============================================================================
 @st.cache_data(ttl=3600, max_entries=24, show_spinner=False)
 def render_chart_png_bytes(
+    is_surface: bool,
     model_type: str,
     dt_str: str,
     fcst_hours: int,
@@ -132,8 +149,25 @@ def render_chart_png_bytes(
     extent: tuple[float, float, float, float],
     dpi: int,
 ) -> bytes:
-    """指定モデル（GSM/MSM）の天気図を生成し、PNGのバイト列として返す。"""
-    if model_type == "GSM":
+    """指定モード・モデルの天気図を生成し、PNGのバイト列として返す。"""
+    if is_surface:
+        if model_type == "GSM":
+            fig = gsm.plot_gsm_surface_chart(
+                dt_str=dt_str,
+                fcst_hours=fcst_hours,
+                extent=extent,
+                save_path=None,
+                return_fig=True,
+            )
+        else:
+            fig = msm.plot_msm_surface_chart(
+                dt_str=dt_str,
+                fcst_hours=fcst_hours,
+                extent=extent,
+                save_path=None,
+                return_fig=True,
+            )
+    elif model_type == "GSM":
         fig = gsm.plot_gsm_snow_chart(
             dt_str=dt_str,
             fcst_hours=fcst_hours,
@@ -169,17 +203,27 @@ def render_chart_png_bytes(
 dt_str = f"{init_date.strftime('%Y%m%d')}{init_hour}"
 
 if run_btn or "gpv_last_params" not in st.session_state:
-    st.session_state["gpv_last_params"] = (model_type, dt_str, fcst_hours, season, extent, dpi)
+    st.session_state["gpv_last_params"] = (
+        is_surface_mode,
+        model_type,
+        dt_str,
+        fcst_hours,
+        season,
+        extent,
+        dpi,
+    )
 
-req_model, req_dt_str, req_ft, req_season, req_extent, req_dpi = st.session_state["gpv_last_params"]
+req_surf, req_model, req_dt_str, req_ft, req_season, req_extent, req_dpi = st.session_state["gpv_last_params"]
 req_init_dt = dt.datetime.strptime(req_dt_str, "%Y%m%d%H")
 req_valid_dt = req_init_dt + dt.timedelta(hours=req_ft)
+mode_tag = "Surface (Wind/MSLP/Prcp)" if req_surf else "Upper Temp (500/850hPa)"
 
 try:
     with st.spinner(
-        f"{req_model} データを取得・作図中... ({req_init_dt.strftime('%Y/%m/%d %H')}UTC + {req_ft}h)"
+        f"{req_model} {mode_tag} を取得・作図中... ({req_init_dt.strftime('%Y/%m/%d %H')}UTC + {req_ft}h)"
     ):
         png_bytes = render_chart_png_bytes(
+            is_surface=req_surf,
             model_type=req_model,
             dt_str=req_dt_str,
             fcst_hours=req_ft,
@@ -194,7 +238,7 @@ try:
         st.image(
             png_bytes,
             caption=(
-                f"[{req_model}] Initial: {req_init_dt.strftime('%Y/%m/%d %H')} UTC / "
+                f"[{req_model} / {mode_tag}] Initial: {req_init_dt.strftime('%Y/%m/%d %H')} UTC / "
                 f"Valid: {req_valid_dt.strftime('%Y/%m/%d %H')} UTC (FT+{req_ft}h)"
             ),
             use_container_width=True,
@@ -205,6 +249,20 @@ try:
         isobar_step = "4 hPa（太線 20 hPa）" if req_model == "GSM" else "2 hPa（太線 10 hPa）"
         proj_name = "ポーラーステレオ図法" if req_model == "GSM" else "ランベルト正角円錐図法"
 
+        if req_surf:
+            prcp_span = "前6時間降水量" if req_model == "GSM" else "前1時間降水量"
+            detail_lines = f"""
+            - **上段**: 地上10m風（矢羽・流線 [kt]）
+            - **下段**: 海面更正気圧（H/L）＋ {prcp_span} [mm]
+            """
+            file_prefix = f"{req_model.lower()}_sfc"
+        else:
+            detail_lines = """
+            - **雪目安 (500hPa)**: `-36°C` (紫) / `-30°C` (青)
+            - **雪目安 (850hPa)**: `-12°C` (紫) / `-6°C` (青)
+            """
+            file_prefix = f"{req_model.lower()}_upper"
+
         st.markdown(
             f"""
             - **使用モデル**: `{req_model}`
@@ -213,13 +271,12 @@ try:
             - **対象時刻**: `{req_valid_dt.strftime('%Y-%m-%d %H:00')} UTC`
             - **予報時間**: `FT+{req_ft}h`
             - **等圧線間隔**: {isobar_step}
-            - **雪目安 (500hPa)**: `-36°C` (紫) / `-30°C` (青)
-            - **雪目安 (850hPa)**: `-12°C` (紫) / `-6°C` (青)
+            {detail_lines}
             """
         )
 
         file_name = (
-            f"{req_model.lower()}_ini{req_dt_str}_ft{req_ft:03d}_"
+            f"{file_prefix}_ini{req_dt_str}_ft{req_ft:03d}_"
             f"valid{req_valid_dt.strftime('%Y%m%d%H')}.png"
         )
         st.download_button(
